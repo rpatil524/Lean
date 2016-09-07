@@ -30,10 +30,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
     /// </summary>
     public class AlgoSeekOptionsProcessor
     {
+        private string _zipPath;
+        private string _entryPath;
         private Symbol _symbol;
         private TickType _tickType;
         private Resolution _resolution;
-        private Queue<string> _queue; 
+        private Queue<BaseData> _queue;
         private string _dataDirectory;
         private IDataConsolidator _consolidator;
         private DateTime _referenceDate;
@@ -49,7 +51,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// </summary>
         public string EntryPath
         {
-            get { return LeanData.GenerateZipEntryName(_symbol, _referenceDate, _resolution, _tickType); }
+            get
+            {
+                if (_entryPath == null)
+                    _entryPath = LeanData.GenerateZipEntryName(_symbol, _referenceDate, _resolution, _tickType);
+                return _entryPath;
+            }
         }
 
         /// <summary>
@@ -57,15 +64,36 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// </summary>
         public string ZipPath
         {
-            get { return Path.Combine(_dataDirectory, LeanData.GenerateRelativeZipFilePath(Safe(_symbol), _referenceDate, _resolution, _tickType).Replace(".zip", string.Empty)) + ".zip"; }
+            get
+            {
+                if (_zipPath == null)
+                    _zipPath = Path.Combine(_dataDirectory, LeanData.GenerateRelativeZipFilePath(Safe(_symbol), _referenceDate, _resolution, _tickType).Replace(".zip", string.Empty)) + ".zip";
+                return _zipPath;
+            }
+        }
+
+        /// <summary>
+        /// Public access to the processor symbol
+        /// </summary>
+        public Symbol Symbol
+        {
+            get { return _symbol; }
         }
 
         /// <summary>
         /// Output base data queue for processing in memory
         /// </summary>
-        public Queue<string> Queue
+        public Queue<BaseData> Queue
         {
             get { return _queue; }
+        }
+
+        /// <summary>
+        /// Accessor for the final enumerator
+        /// </summary>
+        public Resolution Resolution
+        {
+            get { return _resolution; }
         }
 
         /// <summary>
@@ -80,29 +108,23 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         {
             _symbol = Safe(symbol);
             _tickType = tickType;
-            _resolution = resolution;
-            _queue = new Queue<string>();
-            _dataDirectory = dataDirectory;
             _referenceDate = date;
-            
+            _resolution = resolution;
+            _queue = new Queue<BaseData>();
+            _dataDirectory = dataDirectory;
+            _consolidator = new TickConsolidator(resolution.ToTimeSpan());
+
             // Setup the consolidator for the requested resolution
-            _consolidator = new PassthroughConsolidator();
-            if (resolution != Resolution.Tick)
+            if (resolution == Resolution.Tick) throw new NotSupportedException();
+            if (tickType == TickType.Quote)
             {
-                if (tickType == TickType.Trade)
-                {
-                    _consolidator = new TickConsolidator(resolution.ToTimeSpan());
-                }
-                else
-                {
-                    _consolidator = new TickQuoteBarConsolidator(resolution.ToTimeSpan());
-                }
+                _consolidator = new TickQuoteBarConsolidator(resolution.ToTimeSpan());
             }
-            
+
             // On consolidating the bars put the bar into a queue in memory to be written to disk later.
             _consolidator.DataConsolidated += (sender, consolidated) =>
             {
-                _queue.Enqueue(ToCsv(consolidated));
+                _queue.Enqueue(consolidated);
             };
         }
 
@@ -124,9 +146,8 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// Write the in memory queues to the disk.
         /// </summary>
         /// <param name="frontierTime">Current foremost tick time</param>
-        /// <param name="inMemoryProcessing">Process this option symbol entirely in memory</param>
         /// <param name="finalFlush">Indicates is this is the final push to disk at the end of the data</param>
-        public void FlushBuffer(DateTime frontierTime, bool inMemoryProcessing, bool finalFlush)
+        public void FlushBuffer(DateTime frontierTime, bool finalFlush)
         {
             //Force the consolidation if time has past the bar
             _consolidator.Scan(frontierTime);
@@ -134,21 +155,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             // If this is the final packet dump it to the queue
             if (finalFlush && _consolidator.WorkingData != null)
             {
-                _queue.Enqueue(ToCsv(_consolidator.WorkingData));  
-            }
-
-            // No need to write to disk
-            if (inMemoryProcessing) return;
-
-            // Purge the queue to disk if there's work to do:
-            if (_queue.Count == 0) return;
-
-            using (var writer = new LeanOptionsWriter(_dataDirectory, _symbol, frontierTime, _resolution, _tickType))
-            {
-                while (_queue.Count > 0)
-                {
-                    writer.WriteEntry(_queue.Dequeue());
-                }
+                _queue.Enqueue(_consolidator.WorkingData);
             }
         }
 
@@ -168,58 +175,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 }
             }
             return symbol;
-        }
-
-        /// <summary>
-        /// Convert the basedata to a string.
-        /// </summary>
-        /// <param name="data"></param>
-        /// <returns></returns>
-        private string ToCsv(BaseData data)
-        {
-            return LeanData.GenerateLine(data, data.Symbol.ID.SecurityType, _resolution);
-        }
-    }
-
-    /// <summary>
-    /// This is a shim for handling Tick resolution data in TickRepository
-    /// Ordinary TickConsolidators presents Consolidated data as type TradeBars.
-    /// However, LeanData.GenerateLine expects Tick resolution data to be of type Tick.
-    /// This class lets tick data pass through without changing object type,
-    /// which simplifies the logic in TickRepository.
-    /// </summary>
-    internal class PassthroughConsolidator : IDataConsolidator
-    {
-        public BaseData Consolidated { get; private set; }
-
-        public BaseData WorkingData
-        {
-            get { return null; }
-        }
-
-        public Type InputType
-        {
-            get { return typeof(BaseData); }
-        }
-
-        public Type OutputType
-        {
-            get { return typeof(BaseData); }
-        }
-
-        public event DataConsolidatedHandler DataConsolidated;
-
-        public void Update(BaseData data)
-        {
-            Consolidated = data;
-            if (DataConsolidated != null)
-            {
-                DataConsolidated(this, data);
-            }
-        }
-
-        public void Scan(DateTime currentLocalTime)
-        {
         }
     }
 }
