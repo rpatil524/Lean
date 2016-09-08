@@ -14,7 +14,6 @@
 */
 
 using System;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using QuantConnect.Logging;
@@ -22,7 +21,7 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Text;
-using QuantConnect.Data;
+using Newtonsoft.Json;
 using QuantConnect.Data.Market;
 using QuantConnect.Lean.Engine.DataFeeds.Enumerators;
 using QuantConnect.Util;
@@ -34,24 +33,29 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
     /// </summary>
     public class AlgoSeekOptionsConverter
     {
+        private string _cache;
         private string _source;
         private string _destination;
+        private Resolution _resolution;
         private DateTime _referenceDate;
-        private Resolution[] _resolutions;
         private Dictionary<Symbol, List<AlgoSeekOptionsProcessor>> _processors;
-
+        private volatile bool _flushLock;
 
         /// <summary>
         /// Create a new instance of the AlgoSeekOptions Converter. Parse a single input directory into an output.
         /// </summary>
+        /// <param name="resolution">Convert this resolution</param>
         /// <param name="referenceDate">Datetime to be added to the milliseconds since midnight. Algoseek data is stored in channel files (XX.bz2) and in a source directory</param>
         /// <param name="source">Source directory of the .bz algoseek files</param>
         /// <param name="destination">Data directory of LEAN</param>
-        public AlgoSeekOptionsConverter(DateTime referenceDate, string source, string destination)
+        /// <param name="cache">Cache for the temporary serialized data</param>
+        public AlgoSeekOptionsConverter(Resolution resolution, DateTime referenceDate, string source, string destination, string cache)
         {
+            _cache = cache;
             _source = source;
             _referenceDate = referenceDate;
             _destination = destination;
+            _resolution = resolution;
             _processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
         }
 
@@ -60,10 +64,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// </summary>
         public void Convert(Resolution resolution)
         {
-            //Tidy up any existing files:
-            Log.Trace("AlgoSeekOptionsConverter.Convert(): Cleaning input..");
-            //Directory.EnumerateFiles(_source, "*.csv").ToList().ForEach(file => { File.Delete(file); });
-
             //Get the list of all the files, then for each file open a separate streamer.
             var files = Directory.EnumerateFiles(_source, "*.bz2");
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Loading {0} AlgoSeekOptionsReader for {1} ", files.Count(), _referenceDate);
@@ -109,9 +109,20 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             var start = DateTime.Now;
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Synchronizing and processing ticks...", files.Count(), _referenceDate);
 
+            // Store time:
+            var flushStep = TimeSpan.FromMinutes(5);
+            var previousFlush = synchronizer.Current.Time.RoundDown(flushStep);
+
             do
             {
-                var tick = synchronizer.Current;
+                var tick = synchronizer.Current as Tick;
+
+                //If the next minute has clocked over; flush the consolidators; serialize and store data to disk.
+                if (tick.Time.RoundDown(flushStep) > previousFlush)
+                {
+                    previousFlush = WriteToDisk(tick.Time, previousFlush, flushStep);
+                }
+
                 frontier = tick.Time;
 
                 //Add or create the consolidator-flush mechanism for symbol:
@@ -120,19 +131,15 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 {
                     symbolProcessors = new List<AlgoSeekOptionsProcessor>(2)
                     {
-                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Quote, resolution, _destination),
-                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Trade, resolution, _destination)
+                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Trade, resolution, _destination),
+                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Quote, resolution, _destination)
                     };
                     _processors[tick.Symbol] = symbolProcessors;
                 }
 
-                // Pass current tick into processor:
-                foreach (var unit in symbolProcessors)
-                {
-                    unit.Process(tick);
-                }
+                // Pass current tick into processor: enum 0 = trade; 1 = quote.
+                symbolProcessors[ (int)tick.TickType ].Process(tick);
 
-                //Due to limits on the files that can be open at a time we need to constantly flush this to disk.
                 totalLinesProcessed++;
                 if (totalLinesProcessed % 1000000m == 0)
                 {
@@ -143,12 +150,58 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             while (synchronizer.MoveNext());
 
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Performing final flush to disk... ");
-            foreach (var symbol in _processors.Keys)
-            {
-                _processors[symbol].ForEach(x => x.FlushBuffer(DateTime.MaxValue, true));
-            }
+            Flush(DateTime.MaxValue, true);
+            WriteToDisk(DateTime.MaxValue, previousFlush, flushStep, true);
+
+            //Tidy up any existing files:
+            Log.Trace("AlgoSeekOptionsConverter.Convert(): Cleaning temporary files...");
+            //Directory.EnumerateFiles(_source, "*.csv").ToList().ForEach(file => { File.Delete(file); });
+            Directory.EnumerateFiles(_cache).ToList().ForEach(File.Delete);
 
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Finished processing directory: " + _source);
+        }
+
+        /// <summary>
+        /// Write the processor queues to disk
+        /// </summary>
+        /// <param name="peekTickTime">Time of the next tick in the stream</param>
+        /// <param name="previousFlush"></param>
+        /// <param name="step">Period between flushes to disk</param>
+        /// <param name="final">Final push to disk</param>
+        /// <returns></returns>
+        private DateTime WriteToDisk(DateTime peekTickTime, DateTime previousFlush, TimeSpan step, bool final = false)
+        {
+            while (_flushLock) { }
+            _flushLock = true;
+            Flush(peekTickTime, final);
+
+            //Save off the object;
+            var temp = _processors;
+            var tempTime = previousFlush;
+            Task.Run(() =>
+            {
+                foreach (var type in Enum.GetValues(typeof(TickType)))
+                {
+                    var tickType = type;
+                    var groups = temp.Values.Select(x => x[(int) tickType]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
+
+                    Parallel.ForEach(groups, symbol =>
+                    {
+                        var path = Path.Combine(_cache, tempTime.ToString("yyyyMMdd-") + symbol.Key + "-" + tickType + ".json");
+                        using (var stream = File.AppendText(path))
+                        {
+                            //Write the common between the JSON objects:
+                            stream.Write(',');
+                            //Dump the rest of the object behind it:
+                            var serializer = new JsonSerializer();
+                            serializer.Serialize(stream, symbol);
+                        }
+                    });
+                }
+                _flushLock = false;
+            });
+            _processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
+            return peekTickTime.RoundDown(step);
         }
 
         /// <summary>
@@ -159,9 +212,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             var sources = _processors.Values;
 
             // Get the data by ticker values
-            var quotes = sources.Select(x => x[0]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
-            var trades = sources.Select(x => x[1]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
-            var groups = new[] { quotes, trades };
+            var trades = sources.Select(x => x[0]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
+            var quotes = sources.Select(x => x[1]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
+            var groups = new[] { trades, quotes };
 
             //Get total file count:
             var count = 0;
@@ -201,6 +254,14 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 sb.AppendLine(LeanData.GenerateLine(data, SecurityType.Option, processor.Resolution));
             }
             return sb.ToString();
+        }
+
+        private void Flush(DateTime time, bool final)
+        {
+            foreach (var symbol in _processors.Keys)
+            {
+                _processors[symbol].ForEach(x => x.FlushBuffer(time, final));
+            }
         }
     }
 }

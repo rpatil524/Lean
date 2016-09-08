@@ -34,18 +34,17 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             Environment.SetEnvironmentVariable("MONO_MANAGED_WATCHER", "disabled");
             Log.LogHandler = new CompositeLogHandler(new ILogHandler[] { new ConsoleLogHandler(), new FileLogHandler("log.txt") });
 
-            //Root directory for the source data:
-            var sourceDirectory = Config.Get("options-source-directory");
-
-            //Root data output directory
+            // Directory for the data, output and processed cache:
             var dataDirectory = Config.Get("data-directory");
-
+            var cacheDirectory = Config.Get("options-cache-directory");
+            var sourceDirectory = Config.Get("options-source-directory");
+            
             // Date for the option bz files.
             var referenceDate = DateTime.ParseExact(Config.Get("options-reference-date"), DateFormat.EightCharacter, CultureInfo.InvariantCulture);
 
             // Convert the date:
             var timer = Stopwatch.StartNew();
-            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, dataDirectory);
+            var converter = new AlgoSeekOptionsConverter(referenceDate, sourceDirectory, dataDirectory, cacheDirectory);
             converter.Convert(Resolution.Minute);
             Log.Trace(string.Format("AlgoSeekOptionConverter.Main(): {0} Conversion finished in time: {1}", referenceDate, timer.Elapsed));
 

@@ -41,9 +41,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         private DateTime _referenceDate;
         private static string[] _windowsRestrictedNames =
         {
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "CON", "PRN", "AUX", "NUL", /*"COM1", "COM2", "COM3", "COM4", "COM5",
             "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-            "LPT6", "LPT7", "LPT8", "LPT9"
+            "LPT6", "LPT7", "LPT8", "LPT9"*/
         };
 
         /// <summary>
@@ -132,9 +132,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// Process the tick; add to the con
         /// </summary>
         /// <param name="data"></param>
-        public void Process(BaseData data)
+        public void Process(Tick data)
         {
-            if (((Tick)data).TickType != _tickType)
+            if (data.TickType != _tickType)
             {
                 return;
             }
@@ -170,8 +170,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             {
                 if (_windowsRestrictedNames.Contains(symbol.Value))
                 {
-                    symbol = Symbol.CreateOption("_" + symbol.Value, symbol.ID.Market, symbol.ID.OptionStyle,
-                        symbol.ID.OptionRight, symbol.ID.StrikePrice, symbol.ID.Date);
+                    symbol = new Symbol(symbol.ID, "_"+symbol.Value);
                 }
             }
             return symbol;
