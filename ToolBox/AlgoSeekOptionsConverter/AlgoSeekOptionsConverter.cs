@@ -62,7 +62,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// <summary>
         /// Give the reference date and source directory, convert the algoseek options data into n-resolutions LEAN format.
         /// </summary>
-        public void Convert(Resolution resolution)
+        public void Convert()
         {
             //Get the list of all the files, then for each file open a separate streamer.
             var files = Directory.EnumerateFiles(_source, "*.bz2");
@@ -131,8 +131,8 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                 {
                     symbolProcessors = new List<AlgoSeekOptionsProcessor>(2)
                     {
-                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Trade, resolution, _destination),
-                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Quote, resolution, _destination)
+                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Trade, _resolution, _destination),
+                        new AlgoSeekOptionsProcessor(tick.Symbol, _referenceDate, TickType.Quote, _resolution, _destination)
                     };
                     _processors[tick.Symbol] = symbolProcessors;
                 }
