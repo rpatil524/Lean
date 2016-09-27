@@ -21,9 +21,12 @@ using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
+using QuantConnect.Data;
 using QuantConnect.Data.Market;
 using QuantConnect.Lean.Engine.DataFeeds.Enumerators;
+using QuantConnect.Orders;
 using QuantConnect.Util;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
@@ -38,8 +41,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         private string _destination;
         private Resolution _resolution;
         private DateTime _referenceDate;
+        private ManualResetEvent _waitForFlush;
         private Dictionary<Symbol, List<AlgoSeekOptionsProcessor>> _processors;
-        private volatile bool _flushLock;
+        private JsonSerializerSettings _jsonSettings;
 
         /// <summary>
         /// Create a new instance of the AlgoSeekOptions Converter. Parse a single input directory into an output.
@@ -57,6 +61,13 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             _destination = destination;
             _resolution = resolution;
             _processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
+            _waitForFlush = new ManualResetEvent(true);
+
+            //Make sure the BaseData types are correctly serialized;
+            _jsonSettings = new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.All
+            };
         }
 
         /// <summary>
@@ -64,6 +75,9 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// </summary>
         public void Convert()
         {
+            //Clean up any files in cache with the same date:
+            Directory.EnumerateFiles(_cache, _referenceDate.ToString(DateFormat.EightCharacter) + "*.json").ToList().ForEach(File.Delete);
+
             //Get the list of all the files, then for each file open a separate streamer.
             var files = Directory.EnumerateFiles(_source, "*.bz2");
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Loading {0} AlgoSeekOptionsReader for {1} ", files.Count(), _referenceDate);
@@ -93,7 +107,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             });
 
             //Fetch the new CSV files:
-            files = Directory.EnumerateFiles(_source, "*.csv");
+            files = Directory.EnumerateFiles(_source, "*.csv").Take(5);
             if (!files.Any()) throw new Exception("No csv files found");
 
             // Create multithreaded readers; start them in threads and store the ticks in queues
@@ -146,6 +160,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
                     var completed = Math.Round(1 - (estimatedEndTime - frontier).TotalMinutes / TimeSpan.FromHours(6.5).TotalMinutes, 3);
                     Log.Trace("AlgoSeekOptionsConverter.Convert(): Processed {0,3}M ticks( {1}k / sec ); Memory in use: {2} MB; Frontier Time: {3}; Completed: {4:P3}. ASOP Count: {5}", Math.Round(totalLinesProcessed / 1000000m, 2), Math.Round(totalLinesProcessed / 1000L / (DateTime.Now - start).TotalSeconds), Process.GetCurrentProcess().WorkingSet64 / (1024 * 1024), frontier.ToString("u"), completed, _processors.Count);
                 }
+                
+                //TESTING..
+                if (tick.Time.TimeOfDay > new TimeSpan(0, 9, 36, 43))
+                {
+                    break;
+                }
             }
             while (synchronizer.MoveNext());
 
@@ -156,7 +176,6 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             //Tidy up any existing files:
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Cleaning temporary files...");
             //Directory.EnumerateFiles(_source, "*.csv").ToList().ForEach(file => { File.Delete(file); });
-            Directory.EnumerateFiles(_cache).ToList().ForEach(File.Delete);
 
             Log.Trace("AlgoSeekOptionsConverter.Convert(): Finished processing directory: " + _source);
         }
@@ -171,13 +190,13 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// <returns></returns>
         private DateTime WriteToDisk(DateTime peekTickTime, DateTime previousFlush, TimeSpan step, bool final = false)
         {
-            while (_flushLock) { }
-            _flushLock = true;
+            _waitForFlush.WaitOne();
+            _waitForFlush.Reset();
             Flush(peekTickTime, final);
 
             //Save off the object;
             var temp = _processors;
-            var tempTime = previousFlush;
+            var previousFlushTime = previousFlush;
             Task.Run(() =>
             {
                 foreach (var type in Enum.GetValues(typeof(TickType)))
@@ -187,58 +206,69 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 
                     Parallel.ForEach(groups, symbol =>
                     {
-                        var path = Path.Combine(_cache, tempTime.ToString("yyyyMMdd-") + symbol.Key + "-" + tickType + ".json");
+                        var path = Path.Combine(_cache, previousFlushTime.ToString("yyyyMMdd-") + symbol.Key + "-" + tickType + ".json");
                         using (var stream = File.AppendText(path))
                         {
-                            //Write the common between the JSON objects:
-                            stream.Write(',');
                             //Dump the rest of the object behind it:
                             var serializer = new JsonSerializer();
-                            serializer.Serialize(stream, symbol);
+                            serializer.TypeNameHandling = TypeNameHandling.All;
+
+                            foreach (var p in symbol)
+                            {
+                                //Write the common between the JSON objects:
+                                stream.Write(',');
+                                serializer.Serialize(stream, p);
+                            }
                         }
                     });
                 }
-                _flushLock = false;
+                _waitForFlush.Set();
             });
             _processors = new Dictionary<Symbol, List<AlgoSeekOptionsProcessor>>();
+
+            //Pause while writing the final flush.
+            if (final) _waitForFlush.WaitOne();
+
             return peekTickTime.RoundDown(step);
         }
+
 
         /// <summary>
         /// Compress the queue buffers directly to a zip file. Lightening fast as streaming ram-> compressed zip.
         /// </summary>
         public void Package(DateTime date)
         {
-            var sources = _processors.Values;
-
-            // Get the data by ticker values
-            var trades = sources.Select(x => x[0]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
-            var quotes = sources.Select(x => x[1]).Where(x => x.Queue.Count > 0).GroupBy(process => process.Symbol.Value);
-            var groups = new[] { trades, quotes };
-
-            //Get total file count:
+            // Get the joined processor data for each symbol and write that symbol to disk:
             var count = 0;
-            var work = trades.Count() + quotes.Count();
+            var serializedFiles = Directory.EnumerateFiles(_cache);
+            Parallel.ForEach(serializedFiles, file =>
+            {
+                var files = new Dictionary<string, string>();
+                var json = "{\"processors\":[" + File.ReadAllText(file).Trim(',') + "]}";
+                var deserialized = JsonConvert.DeserializeObject<AlgoSeekOptionSerializationTransfer>(json, _jsonSettings);
 
-            // Write each grouped zip:
-            foreach (var tradeType in groups)
-                foreach (var group in tradeType)
+                //Get the output path:
+                var zip = deserialized.Processors.First().ZipPath;
+
+                foreach (var processor in deserialized.Processors)
                 {
-                    //All algoSeekProcessors share the same zippath.
-                    var zip = group.First().ZipPath;
-                    var files = new Dictionary<string, string>();
-                    foreach (var processor in group)
+                    //Append the new LEAN bars to the planned file output
+                    if (files.ContainsKey(processor.EntryPath))
                     {
-                        // Get the file output for this processor:
-                        files.Add(processor.EntryPath, FileBuilder(processor));
+                        files[processor.EntryPath] += FileBuilder(processor);
                     }
-
-                    // Create the directory and the zip file
-                    var output = new DirectoryInfo(zip);
-                    if (!output.Parent.Exists) output.Parent.Create();
-                    Compression.ZipData(zip, files);
-                    if (count++ % 1000 == 0) Log.Trace("AlgoSeekOptionsConverter.Package(): Processed {0} of {1} files...", count, work);
+                    else
+                    {
+                        files[processor.EntryPath] = FileBuilder(processor);
+                    }
+                    
                 }
+
+                var output = new DirectoryInfo(zip);
+                if (!output.Parent.Exists) output.Parent.Create();
+                Compression.ZipData(zip, files);
+                if (count++ % 1000 == 0) Log.Trace("AlgoSeekOptionsConverter.Package(): Processed {0} of {1} files...", count, serializedFiles.Count());
+            });
         }
 
         /// <summary>
@@ -262,6 +292,14 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             {
                 _processors[symbol].ForEach(x => x.FlushBuffer(time, final));
             }
+        }
+
+        /// <summary>
+        /// Data Transfer Class
+        /// </summary>
+        private class AlgoSeekOptionSerializationTransfer
+        {
+            public List<AlgoSeekOptionsProcessor> Processors;
         }
     }
 }

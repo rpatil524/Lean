@@ -21,6 +21,8 @@ using QuantConnect.Data.Consolidators;
 using QuantConnect.Data.Market;
 using QuantConnect.Util;
 using System.Linq;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Serialization;
 
 namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
 {
@@ -41,9 +43,7 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         private DateTime _referenceDate;
         private static string[] _windowsRestrictedNames =
         {
-            "CON", "PRN", "AUX", "NUL", /*"COM1", "COM2", "COM3", "COM4", "COM5",
-            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
-            "LPT6", "LPT7", "LPT8", "LPT9"*/
+            "con", "prn", "aux", "nul"
         };
 
         /// <summary>
@@ -54,9 +54,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             get
             {
                 if (_entryPath == null)
+                {
                     _entryPath = LeanData.GenerateZipEntryName(_symbol, _referenceDate, _resolution, _tickType);
+                }   
                 return _entryPath;
             }
+            set { _entryPath = value; }
         }
 
         /// <summary>
@@ -67,9 +70,12 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
             get
             {
                 if (_zipPath == null)
+                {
                     _zipPath = Path.Combine(_dataDirectory, LeanData.GenerateRelativeZipFilePath(Safe(_symbol), _referenceDate, _resolution, _tickType).Replace(".zip", string.Empty)) + ".zip";
+                }
                 return _zipPath;
             }
+            set { _zipPath = value; }
         }
 
         /// <summary>
@@ -83,9 +89,19 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         /// <summary>
         /// Output base data queue for processing in memory
         /// </summary>
+        [JsonIgnore]
         public Queue<BaseData> Queue
         {
             get { return _queue; }
+        }
+
+        /// <summary>
+        /// Serializable property for JSON serialization
+        /// </summary>
+        public List<BaseData> SerializedQueue
+        {
+            get { return _queue.ToList(); }
+            set { _queue = new Queue<BaseData>(value);}
         }
 
         /// <summary>
@@ -94,6 +110,16 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         public Resolution Resolution
         {
             get { return _resolution; }
+        }
+
+        /// <summary>
+        /// Type of this option processor. 
+        /// ASOP's are grouped trade type for file writing.
+        /// </summary>
+        public TickType TickType
+        {
+            get { return _tickType; }
+            set { _tickType = value; }
         }
 
         /// <summary>
@@ -168,9 +194,10 @@ namespace QuantConnect.ToolBox.AlgoSeekOptionsConverter
         {
             if (OS.IsWindows)
             {
-                if (_windowsRestrictedNames.Contains(symbol.Value))
+                if (_windowsRestrictedNames.Contains(symbol.Value.ToLower()))
                 {
-                    symbol = new Symbol(symbol.ID, "_"+symbol.Value);
+                    symbol = Symbol.CreateOption("_" + symbol.ID.Symbol, Market.USA, symbol.ID.OptionStyle,
+                        symbol.ID.OptionRight, symbol.ID.StrikePrice, symbol.ID.Date);
                 }
             }
             return symbol;
