@@ -330,6 +330,9 @@ namespace QuantConnect.Lean.Engine.Setup
                     return false;
                 }
 
+                // PostInitialize internally sets the benchmark, 
+                // so to avoid problems with internal feeds for symbols in holdings,
+                // it must be called AFTER all the brokerage stuff above
                 algorithm.PostInitialize();
 
                 //Set the starting portfolio value for the strategy to calculate performance:
