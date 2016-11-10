@@ -32,7 +32,7 @@ namespace QuantConnect.Data.Market
         /// Average bid size
         /// </summary>
         public long LastBidSize { get; set; }
-        
+
         /// <summary>
         /// Average ask size
         /// </summary>
@@ -209,14 +209,14 @@ namespace QuantConnect.Data.Market
             if (Ask == null && askPrice != 0) Ask = new Bar();
             if (Ask != null) Ask.Update(askPrice);
 
-            if (bidSize > 0) 
+            if (bidSize > 0)
             {
-                LastBidSize = (long) bidSize;
+                LastBidSize = (long)bidSize;
             }
-            
+
             if (askSize > 0)
             {
-                LastAskSize = (long) askSize;
+                LastAskSize = (long)askSize;
             }
 
             // be prepared for updates without trades
@@ -234,6 +234,81 @@ namespace QuantConnect.Data.Market
         /// <param name="isLiveMode">true if we're in live mode, false for backtesting mode</param>
         /// <returns>Enumerable iterator for returning each line of the required data.</returns>
         public override BaseData Reader(SubscriptionDataConfig config, string line, DateTime date, bool isLiveMode)
+        {
+            var quoteBar = new QuoteBar();
+
+            var csvLength = line.Split(',').Length;
+
+            // "Scaffold" code - simple check to see how the data is formatted and decide how to parse appropriately
+            // TODO: Once all FX is reprocessed to QuoteBars, remove this check
+            if (csvLength > 5)
+                quoteBar = ParseForexFromQuoteBarData(config, date, line);
+            else
+                quoteBar = ParseForexFromTradeBarData(config, date, line);
+
+            return quoteBar;
+        }
+
+        /// <summary>
+        /// "Scaffold" code - If the data being read is formatted as a TradeBar, use this method to deserialize it
+        /// TODO: Once all Forex data refactored to use QuoteBar formatted data, remove this method
+        /// </summary>
+        /// <param name="config">Symbols, Resolution, DataType, </param>
+        /// <param name="line">Line from the data file requested</param>
+        /// <param name="date">Date of this reader request</param>
+        /// <returns><see cref="QuoteBar"/> with the bid/ask prices set to same values</returns>
+        private QuoteBar ParseForexFromTradeBarData(SubscriptionDataConfig config, DateTime date, string line)
+        {
+            var quoteBar = new QuoteBar
+            {
+                Period = config.Increment,
+                Symbol = config.Symbol
+            };
+
+            var csv = line.ToCsv(5);
+            if (config.Resolution == Resolution.Daily || config.Resolution == Resolution.Hour)
+            {
+                // hourly and daily have different time format, and can use slow, robust c# parser.
+                quoteBar.Time = DateTime.ParseExact(csv[0], DateFormat.TwelveCharacter, CultureInfo.InvariantCulture).ConvertTo(config.DataTimeZone, config.ExchangeTimeZone);
+            }
+            else
+            {
+                //Fast decimal conversion
+                quoteBar.Time = date.Date.AddMilliseconds(csv[0].ToInt32()).ConvertTo(config.DataTimeZone, config.ExchangeTimeZone);
+            }
+
+            var bid = new Bar
+            {
+                Open = csv[1].ToDecimal(),
+                High = csv[2].ToDecimal(),
+                Low = csv[3].ToDecimal(),
+                Close = csv[4].ToDecimal()
+            };
+
+            var ask = new Bar
+            {
+                Open = csv[1].ToDecimal(),
+                High = csv[2].ToDecimal(),
+                Low = csv[3].ToDecimal(),
+                Close = csv[4].ToDecimal()
+            };
+
+            quoteBar.Ask = ask;
+            quoteBar.Bid = bid;
+            quoteBar.Value = quoteBar.Close;
+
+            return quoteBar;
+        }
+
+        /// <summary>
+        /// "Scaffold" code - If the data being read is formatted as a QuoteBar, use this method to deserialize it
+        /// TODO: Once all Forex data refactored to use QuoteBar formatted data, use only this method
+        /// </summary>
+        /// <param name="config">Symbols, Resolution, DataType, </param>
+        /// <param name="line">Line from the data file requested</param>
+        /// <param name="date">Date of this reader request</param>
+        /// <returns><see cref="QuoteBar"/> with the bid/ask prices set appropriately</returns>
+        private QuoteBar ParseForexFromQuoteBarData(SubscriptionDataConfig config, DateTime date, string line)
         {
             var quoteBar = new QuoteBar
             {
@@ -258,10 +333,10 @@ namespace QuantConnect.Data.Market
             {
                 quoteBar.Bid = new Bar
                 {
-                    Open = config.GetNormalizedPrice(csv[1].ToDecimal()*_scaleFactor),
-                    High = config.GetNormalizedPrice(csv[2].ToDecimal()*_scaleFactor),
-                    Low = config.GetNormalizedPrice(csv[3].ToDecimal()*_scaleFactor),
-                    Close = config.GetNormalizedPrice(csv[4].ToDecimal()*_scaleFactor)
+                    Open = config.GetNormalizedPrice(csv[1].ToDecimal() * _scaleFactor),
+                    High = config.GetNormalizedPrice(csv[2].ToDecimal() * _scaleFactor),
+                    Low = config.GetNormalizedPrice(csv[3].ToDecimal() * _scaleFactor),
+                    Close = config.GetNormalizedPrice(csv[4].ToDecimal() * _scaleFactor)
                 };
                 quoteBar.LastBidSize = csv[5].ToInt64();
             }
@@ -275,10 +350,10 @@ namespace QuantConnect.Data.Market
             {
                 quoteBar.Ask = new Bar
                 {
-                    Open = config.GetNormalizedPrice(csv[6].ToDecimal()*_scaleFactor),
-                    High = config.GetNormalizedPrice(csv[7].ToDecimal()*_scaleFactor),
-                    Low = config.GetNormalizedPrice(csv[8].ToDecimal()*_scaleFactor),
-                    Close = config.GetNormalizedPrice(csv[9].ToDecimal()*_scaleFactor)
+                    Open = config.GetNormalizedPrice(csv[6].ToDecimal() * _scaleFactor),
+                    High = config.GetNormalizedPrice(csv[7].ToDecimal() * _scaleFactor),
+                    Low = config.GetNormalizedPrice(csv[8].ToDecimal() * _scaleFactor),
+                    Close = config.GetNormalizedPrice(csv[9].ToDecimal() * _scaleFactor)
                 };
                 quoteBar.LastAskSize = csv[10].ToInt64();
             }
@@ -308,8 +383,7 @@ namespace QuantConnect.Data.Market
             }
 
             var source = LeanData.GenerateZipFilePath(Globals.DataFolder, config.Symbol, date, config.Resolution, config.TickType);
-            if (config.SecurityType == SecurityType.Option ||
-                config.SecurityType == SecurityType.Future)
+            if (config.SecurityType == SecurityType.Option)
             {
                 source += "#" + LeanData.GenerateZipEntryName(config.Symbol, date, config.Resolution, config.TickType);
             }
