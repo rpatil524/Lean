@@ -74,6 +74,12 @@ namespace QuantConnect
         /// Current market conversion rate into the account currency
         public decimal ConversionRate;
 
+        /// Current market value of the holding 
+        public decimal MarketValue;
+
+        /// Current unrealized P/L of the holding 
+        public decimal UnrealizedPnL;
+
         /// Create a new default holding:
         public Holding()
         {
@@ -93,6 +99,8 @@ namespace QuantConnect
             Symbol = holding.Symbol;
             Type = holding.Type;
             Quantity = holding.Quantity;
+            MarketValue = holding.HoldingsValue;
+            UnrealizedPnL = holding.UnrealizedProfit;
             CurrencySymbol = Currencies.GetCurrencySymbol(security.QuoteCurrency.Symbol);
             ConversionRate = security.QuoteCurrency.ConversionRate;
 
@@ -119,6 +127,8 @@ namespace QuantConnect
                 Type = Type,
                 Quantity = Quantity,
                 MarketPrice = MarketPrice,
+                MarketValue = MarketValue,
+                UnrealizedPnL = UnrealizedPnL,
                 ConversionRate  = ConversionRate,
                 CurrencySymbol = CurrencySymbol
             };
