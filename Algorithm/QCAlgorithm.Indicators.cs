@@ -28,6 +28,19 @@ namespace QuantConnect.Algorithm
 {
     public partial class QCAlgorithm
     {
+        private readonly List<Func<IBaseData, decimal>> _quoteRequiredFields = new() {
+            Field.BidPrice,
+            Field.AskPrice,
+            Field.BidClose,
+            Field.BidOpen,
+            Field.BidLow,
+            Field.BidHigh,
+            Field.AskClose,
+            Field.AskOpen,
+            Field.AskLow,
+            Field.AskHigh,
+        };
+
         /// <summary>
         /// Gets whether or not WarmUpIndicator is allowed to warm up indicators
         /// </summary>
@@ -460,10 +473,30 @@ namespace QuantConnect.Algorithm
             var name = CreateIndicatorName(symbol, $"CHOP({period})", resolution);
             var indicator = new ChoppinessIndex(name, period);
             InitializeIndicator(indicator, resolution, selector, symbol);
-
             return indicator;
         }
 
+        /// <summary>
+        /// Creates a new Chande Kroll Stop indicator which will compute the short and lower stop.
+        /// The indicator will be automatically updated on the given resolution.
+        /// </summary>
+        /// <param name="symbol">The symbol whose Chande Kroll Stop we seek.</param>
+        /// <param name="atrPeriod">The period over which to compute the average true range.</param>
+        /// <param name="atrMult">The ATR multiplier to be used to compute stops distance.</param>
+        /// <param name="period">The period over which to compute the max of high stop and min of low stop.</param>
+        /// <param name="resolution">The resolution.</param>
+        /// <param name="movingAverageType">The type of smoothing used to smooth the true range values</param>
+        /// <param name="selector">Selects a value from the BaseData to send into the indicator, if null defaults to casting the input value to a TradeBar</param>
+        /// <returns>The Chande Kroll Stop indicator for the requested symbol.</returns>
+        [DocumentationAttribute(Indicators)]
+        public ChandeKrollStop CKS(Symbol symbol, int atrPeriod, decimal atrMult, int period, MovingAverageType movingAverageType = MovingAverageType.Wilders, Resolution ? resolution = null, Func<IBaseData, IBaseDataBar> selector = null)
+        {
+            var name = CreateIndicatorName(symbol, $"CKS({atrPeriod},{atrMult},{period})", resolution);
+            var indicator = new ChandeKrollStop(name, atrPeriod, atrMult, period, movingAverageType);
+            InitializeIndicator(indicator, resolution, selector, symbol);
+            return indicator;
+        }
+      
         /// <summary>
         /// Creates a new ChaikinMoneyFlow indicator.
         /// </summary>
@@ -482,7 +515,7 @@ namespace QuantConnect.Algorithm
             return chaikinMoneyFlow;
 
         }
-                
+
         /// <summary>
         /// Creates a new ChandeMomentumOscillator indicator.
         /// </summary>
@@ -568,8 +601,8 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The desired resolution of the data</param>
         /// <returns>A new Delta indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
-        public Delta D(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes, 
-            OptionPricingModelType? ivModel = null, Resolution? resolution = null)
+        public Delta D(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
+            OptionPricingModelType? optionModel = null, OptionPricingModelType? ivModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<Delta>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -614,7 +647,7 @@ namespace QuantConnect.Algorithm
 
             return doubleExponentialMovingAverage;
         }
-        
+
         /// <summary>
         /// Creates a new DerivativeOscillator indicator.
         /// </summary>
@@ -836,8 +869,8 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The desired resolution of the data</param>
         /// <returns>A new Gamma indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
-        public Gamma G(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes,
-            OptionPricingModelType? ivModel = null, Resolution? resolution = null)
+        public Gamma G(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
+            OptionPricingModelType? optionModel = null, OptionPricingModelType? ivModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<Gamma>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -996,7 +1029,7 @@ namespace QuantConnect.Algorithm
         {
             var name = CreateIndicatorName(symbol, fieldName ?? "close", resolution);
             var identity = new Identity(name);
-            RegisterIndicator(symbol, identity, resolution, selector);
+            InitializeIndicator(identity, resolution, selector, symbol);
             return identity;
         }
 
@@ -1031,7 +1064,7 @@ namespace QuantConnect.Algorithm
         /// <returns>A new ImpliedVolatility indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
         public ImpliedVolatility IV(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
-            OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes, Resolution? resolution = null)
+            OptionPricingModelType? optionModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<ImpliedVolatility>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -1294,13 +1327,7 @@ namespace QuantConnect.Algorithm
                 }
             }
 
-            RegisterIndicator(symbol, maximum, ResolveConsolidator(symbol, resolution), selector);
-
-            if (Settings.AutomaticIndicatorWarmUp)
-            {
-                WarmUpIndicator(symbol, maximum, resolution, selector);
-            }
-
+            InitializeIndicator(maximum, resolution, selector, symbol);
             return maximum;
         }
 
@@ -1405,13 +1432,7 @@ namespace QuantConnect.Algorithm
                 }
             }
 
-            RegisterIndicator(symbol, minimum, ResolveConsolidator(symbol, resolution), selector);
-
-            if (Settings.AutomaticIndicatorWarmUp)
-            {
-                WarmUpIndicator(symbol, minimum, resolution, selector);
-            }
-
+            InitializeIndicator(minimum, resolution, selector, symbol);
             return minimum;
         }
 
@@ -1682,7 +1703,7 @@ namespace QuantConnect.Algorithm
 
             return relativeStrengthIndex;
         }
-        
+
         /// <summary>
         /// Creates a new RelativeVigorIndex indicator.
         /// </summary>
@@ -1734,8 +1755,8 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The desired resolution of the data</param>
         /// <returns>A new Rho indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
-        public Rho R(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes,
-            OptionPricingModelType? ivModel = null, Resolution? resolution = null)
+        public Rho R(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
+            OptionPricingModelType? optionModel = null, OptionPricingModelType? ivModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<Rho>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -2036,8 +2057,8 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The desired resolution of the data</param>
         /// <returns>A new Theta indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
-        public Theta T(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes,
-            OptionPricingModelType? ivModel = null, Resolution? resolution = null)
+        public Theta T(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
+            OptionPricingModelType? optionModel = null, OptionPricingModelType? ivModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<Theta>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -2211,8 +2232,8 @@ namespace QuantConnect.Algorithm
         /// <param name="resolution">The desired resolution of the data</param>
         /// <returns>A new Vega indicator for the specified symbol</returns>
         [DocumentationAttribute(Indicators)]
-        public Vega V(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes,
-            OptionPricingModelType? ivModel = null, Resolution? resolution = null)
+        public Vega V(Symbol symbol, Symbol mirrorOption = null, decimal? riskFreeRate = null, decimal? dividendYield = null,
+            OptionPricingModelType? optionModel = null, OptionPricingModelType? ivModel = null, Resolution? resolution = null)
         {
             var name = InitializeOptionIndicator<Vega>(symbol, out var riskFreeRateModel, out var dividendYieldModel, riskFreeRate, dividendYield, optionModel, resolution);
 
@@ -2612,6 +2633,26 @@ namespace QuantConnect.Algorithm
             InitializeIndicator(msi, resolution, selector, symbols);
 
             return msi;
+        }
+
+
+        /// <summary>
+        /// Creates a new RogersSatchellVolatility indicator for the symbol. The indicator will be automatically
+        /// updated on the given resolution.
+        /// </summary>
+        /// <param name="symbol">The symbol whose RogersSatchellVolatility we want</param>
+        /// <param name="period">The period of the rolling window used to compute volatility</param>
+        /// <param name="resolution">The resolution</param>
+        /// <param name="selector">Selects a value from the BaseData to send into the indicator, if null defaults to casting the input value to a TradeBar</param>
+        /// <returns>A new RogersSatchellVolatility indicator with the specified smoothing type and period</returns>
+        [DocumentationAttribute(Indicators)]
+        public RogersSatchellVolatility RSV(Symbol symbol, int period, Resolution? resolution = null, Func<IBaseData, IBaseDataBar> selector = null)
+        {
+            var name = CreateIndicatorName(symbol, $"RSV({period})", resolution);
+            var indicator = new RogersSatchellVolatility(name, period);
+            InitializeIndicator(indicator, resolution, selector, symbol);
+
+            return indicator;
         }
 
         /// <summary>
@@ -3653,7 +3694,7 @@ namespace QuantConnect.Algorithm
         public IndicatorHistory IndicatorHistory(IndicatorBase<IndicatorDataPoint> indicator, IEnumerable<Slice> history, Func<IBaseData, decimal> selector = null)
         {
             selector ??= (x => x.Value);
-            return IndicatorHistory(indicator, history, (bar) => indicator.Update(new IndicatorDataPoint(bar.Symbol, bar.EndTime, selector(bar))));
+            return IndicatorHistory(indicator, history, (bar) => indicator.Update(new IndicatorDataPoint(bar.Symbol, bar.EndTime, selector(bar))), GetDataTypeFromSelector(selector));
         }
 
         /// <summary>
@@ -3742,9 +3783,10 @@ namespace QuantConnect.Algorithm
         private void InitializeIndicator(IndicatorBase<IndicatorDataPoint> indicator, Resolution? resolution = null,
             Func<IBaseData, decimal> selector = null, params Symbol[] symbols)
         {
+            var dataType = GetDataTypeFromSelector(selector);
             foreach (var symbol in symbols)
             {
-                RegisterIndicator(symbol, indicator, resolution, selector);
+                RegisterIndicator(symbol, indicator, ResolveConsolidator(symbol, resolution, dataType), selector);
             }
 
             if (Settings.AutomaticIndicatorWarmUp)
@@ -3785,11 +3827,13 @@ namespace QuantConnect.Algorithm
             }
         }
 
-        private string InitializeOptionIndicator<T>(Symbol symbol, out IRiskFreeInterestRateModel riskFreeRateModel, out IDividendYieldModel dividendYieldModel, 
-            decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType optionModel = OptionPricingModelType.BlackScholes, Resolution? resolution = null)
+        private string InitializeOptionIndicator<T>(Symbol symbol, out IRiskFreeInterestRateModel riskFreeRateModel, out IDividendYieldModel dividendYieldModel,
+            decimal? riskFreeRate = null, decimal? dividendYield = null, OptionPricingModelType? optionModel = null, Resolution? resolution = null)
             where T : OptionIndicatorBase
         {
-            var name = CreateIndicatorName(symbol, $"{typeof(T).Name}({riskFreeRate},{dividendYield},{optionModel})", resolution);
+            var name = CreateIndicatorName(symbol,
+                $"{typeof(T).Name}({riskFreeRate},{dividendYield},{OptionIndicatorBase.GetOptionModel(optionModel, symbol.ID.OptionStyle)})",
+                resolution);
 
             riskFreeRateModel = riskFreeRate.HasValue
                 ? new ConstantRiskFreeRateInterestRateModel(riskFreeRate.Value)
@@ -3850,7 +3894,7 @@ namespace QuantConnect.Algorithm
             return dataNormalizationMode;
         }
 
-        private IndicatorHistory IndicatorHistory<T>(IndicatorBase<T> indicator, IEnumerable<Slice> history, Action<IBaseData> updateIndicator)
+        private IndicatorHistory IndicatorHistory<T>(IndicatorBase<T> indicator, IEnumerable<Slice> history, Action<IBaseData> updateIndicator, Type dataType = null)
             where T : IBaseData
         {
             // Reset the indicator
@@ -3906,7 +3950,7 @@ namespace QuantConnect.Algorithm
 
             if (typeof(T) == typeof(IndicatorDataPoint) || typeof(T).IsAbstract)
             {
-                history.PushThrough(bar => updateIndicator(bar));
+                history.PushThrough(bar => updateIndicator(bar), dataType);
             }
             else
             {
@@ -3923,6 +3967,21 @@ namespace QuantConnect.Algorithm
 
             return new IndicatorHistory(indicatorsDataPointsByTime, indicatorsDataPointPerProperty,
                 new Lazy<PyObject>(() => PandasConverter.GetIndicatorDataFrame(indicatorsDataPointPerProperty.Select(x => new KeyValuePair<string, List<IndicatorDataPoint>>(x.Name, x.Values)))));
+        }
+
+        private Type GetDataTypeFromSelector(Func<IBaseData, decimal> selector)
+        {
+            Type dataType = null;
+            if (_quoteRequiredFields.Any(x => ReferenceEquals(selector, x)))
+            {
+                dataType = typeof(QuoteBar);
+            }
+            else if (ReferenceEquals(selector, Field.Volume))
+            {
+                dataType = typeof(TradeBar);
+            }
+
+            return dataType;
         }
     }
 }
